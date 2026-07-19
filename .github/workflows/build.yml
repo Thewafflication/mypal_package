@@ -1,0 +1,121 @@
+name: Build Mypal WPM packages
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish/update the GitHub release for the latest Mypal version
+        required: true
+        default: false
+        type: boolean
+  schedule:
+    - cron: '17 6 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.arch }} ${{ (github.event_name == 'schedule' || inputs.publish) && 'release' || 'debug' }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86, x64]
+    env:
+      WPM_PRIVATE_KEY: ${{ secrets.WPM_RELEASE_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install WPM
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'install-wpm.cmd'
+          Invoke-WebRequest -UseBasicParsing 'https://github.com/Thewafflication/wpm/releases/latest/download/install.cmd' -OutFile $installer
+          & $installer
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wpmDirectory = Join-Path $env:ProgramFiles 'WPM'
+          if (-not (Test-Path (Join-Path $wpmDirectory 'wpm.exe') -PathType Leaf)) { throw 'WPM installation failed.' }
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $wpmDirectory
+      - name: Prepare release signing key
+        if: github.event_name == 'schedule' || inputs.publish
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WPM_PRIVATE_KEY)) { throw 'The repository must define WPM_RELEASE_PRIVATE_KEY.' }
+          [IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'mypal-release.private'), $env:WPM_PRIVATE_KEY)
+      - name: Build package
+        shell: pwsh
+        run: |
+          $release = '${{ github.event_name }}' -eq 'schedule' -or '${{ inputs.publish }}' -eq 'true'
+          $parameters = @{ Architecture = '${{ matrix.arch }}'; DebugPackage = -not $release }
+          if ($release) { $parameters.SigningKey = Join-Path $env:RUNNER_TEMP 'mypal-release.private' }
+          $result = .\scripts\Build-MypalPackage.ps1 @parameters
+          "version=$($result.Version)" >> $env:GITHUB_OUTPUT
+        id: package
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Verify signed package
+        if: github.event_name == 'schedule' || inputs.publish
+        shell: pwsh
+        run: |
+          wpm trust add release_keys/wpm-release.public
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $package = @(Get-ChildItem out/packages/mypal-${{ matrix.arch }}-*.zip -File)
+          if ($package.Count -ne 1) { throw "Expected one package; found $($package.Count)." }
+          wpm verify $package[0].FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Remove private key
+        if: always()
+        shell: pwsh
+        run: Remove-Item (Join-Path $env:RUNNER_TEMP 'mypal-release.private') -Force -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mypal-${{ matrix.arch }}-${{ steps.package.outputs.version }}
+          path: out/packages/*.zip
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    if: github.event_name == 'schedule' || inputs.publish
+    needs: build
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mypal-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create repository metadata
+        id: metadata
+        shell: pwsh
+        run: |
+          $assets = (Resolve-Path release-assets).Path
+          Copy-Item release_keys/wpm-release.public (Join-Path $assets 'wpm-release.public')
+          $packages = foreach ($file in Get-ChildItem $assets -Filter 'mypal-*.zip' -File) {
+            if ($file.Name -notmatch '^mypal-(x86|x64)-(.+)\.zip$') { throw "Unexpected package filename: $($file.Name)" }
+            [ordered]@{ name = 'mypal'; version = $Matches[2]; arch = $Matches[1]; url = "https://github.com/${{ github.repository }}/releases/download/mypal-$($Matches[2])/$($file.Name)" }
+          }
+          if (@($packages).Count -ne 2) { throw 'Expected exactly two packages.' }
+          $versions = @($packages.version | Select-Object -Unique)
+          if ($versions.Count -ne 1) { throw 'Package versions do not match.' }
+          [ordered]@{ version = 1; packages = @($packages) } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $assets 'index.json') -Encoding utf8NoBOM
+          "tag=mypal-$($versions[0])" >> $env:GITHUB_OUTPUT
+      - name: Create or update GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.metadata.outputs.tag }}'
+          gh release view $tag --repo '${{ github.repository }}' *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --repo '${{ github.repository }}' --target '${{ github.sha }}' --title $tag --notes "Signed WPM packages for upstream Mypal $($tag.Substring(6))."
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $files = @(Get-ChildItem release-assets -File)
+          gh release upload $tag --repo '${{ github.repository }}' --clobber @($files.FullName)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
