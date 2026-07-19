@@ -84,7 +84,8 @@ set "MYPAL_DEST=$installDirectory"
 if not exist "%MYPAL_DEST%" mkdir "%MYPAL_DEST%" || exit /b 1
 xcopy "%~dp0..\*" "%MYPAL_DEST%\" /E /I /Q /Y >nul || exit /b 1
 if exist "%MYPAL_DEST%\.wpm" rmdir /S /Q "%MYPAL_DEST%\.wpm"
-cscript //nologo "%~dp0shortcut.vbs" create "%MYPAL_DEST%\mypal.exe" || exit /b 1
+cscript //nologo "%~dp0..\shortcut.vbs" create "%MYPAL_DEST%\mypal.exe" || exit /b 1
+if exist "%MYPAL_DEST%\shortcut.vbs" del /F /Q "%MYPAL_DEST%\shortcut.vbs"
 exit /b 0
 "@ -replace "`n", "`r`n"
 [IO.File]::WriteAllText((Join-Path $metadataDirectory 'install.cmd'), $installScript, [Text.ASCIIEncoding]::new())
@@ -93,7 +94,7 @@ $removeScript = @"
 @echo off
 setlocal
 set "MYPAL_DEST=$installDirectory"
-cscript //nologo "%~dp0shortcut.vbs" remove "%MYPAL_DEST%\mypal.exe"
+cscript //nologo "%~dp0..\shortcut.vbs" remove "%MYPAL_DEST%\mypal.exe"
 if exist "%MYPAL_DEST%" rmdir /S /Q "%MYPAL_DEST%" || exit /b 1
 exit /b 0
 "@ -replace "`n", "`r`n"
@@ -124,7 +125,7 @@ Else
   WScript.Quit 2
 End If
 '@
-[IO.File]::WriteAllText((Join-Path $metadataDirectory 'shortcut.vbs'), $shortcutScript, [Text.ASCIIEncoding]::new())
+[IO.File]::WriteAllText((Join-Path $stagingDirectory 'shortcut.vbs'), $shortcutScript, [Text.ASCIIEncoding]::new())
 [IO.File]::WriteAllText((Join-Path $metadataDirectory 'wpmignore.txt'), ".wpm/`n*.log`nout/`n", [Text.ASCIIEncoding]::new())
 
 $arguments = @('build', $stagingDirectory, $resolvedOutput)
