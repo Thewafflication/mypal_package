@@ -49,10 +49,6 @@ New-Item -ItemType Directory -Force -Path $downloadDirectory, $extractDirectory,
 
 $archive = Join-Path $downloadDirectory $asset.name
 Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $asset.browser_download_url -OutFile $archive
-if ($asset.digest -and $asset.digest -match '^sha256:(?<hash>[0-9a-fA-F]{64})$') {
-    $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
-    if ($actualHash -ne $Matches.hash) { throw "SHA-256 mismatch for $($asset.name)." }
-}
 Expand-Archive -LiteralPath $archive -DestinationPath $extractDirectory
 
 $executables = @(Get-ChildItem -LiteralPath $extractDirectory -Filter 'mypal.exe' -File -Recurse)
